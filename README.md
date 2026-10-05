@@ -30,8 +30,8 @@ $ cd multas-biblioteca-api && mvn spring-boot:run
 ```
 
 ## Herramientas utilizadas
-- Java 17, Spring Boot 3.x, Spring Data JPA, H2, RestTemplate
-- Apache Maven, Postman/curl, Git, GitHub
+- Java 17, Spring Boot 4.1.1, Spring Data JPA, H2, RestTemplate
+- Apache Maven, Postman/curl, Git, GitHub, VS code
 
 ## Decisiones de diseño
 
@@ -39,7 +39,25 @@ $ cd multas-biblioteca-api && mvn spring-boot:run
 El cálculo del monto se ubicó en Multa.calcularMonto porque la regla solo depende de los valores definidos por la propia entidad. De esta forma, Multa no es solamente un contenedor de datos, sino que también contiene un comportamiento propio relacionado directamente con su estado. La alternativa sería colocar el cálculo dentro de MultaService, pero esto haría que la entidad dependiera del Service para una operación que no necesita ningún dato externo. Además, si el cálculo estuviera únicamente en el Service, se acercaría a un modelo anémico, donde las entidades contienen principalmente datos y la lógica de negocio queda concentrada en los servicios.
 
 ### Punto de decisión 2 — Conteo de multas pendientes: ¿consulta o filtrado en memoria?
-Para verificar el límite de multas pendientes se utiliza countByEstudianteIdAndEstado, permitiendo que la base de datos realice directamente el conteo. Se descartó obtener todas las multas mediante findByEstudianteId para después filtrarlas con Java, porque no es necesario recuperar registros completos cuando únicamente se necesita conocer su cantidad. De esta manera, MultaService mantiene la decisión de negocio —si el estudiante puede generar otra multa— mientras que MultaRepository se encarga de obtener de forma directa el dato que esa decisión necesita. Ademas, evita cargar en memoria multas que no son necesarias para realizar la validación.
+Para verificar el límite de multas pendientes se utiliza countByEstudianteIdAndEstado, permitiendo que la base de datos realice directamente el conteo. Se descartó obtener todas las multas mediante findByEstudianteId para después filtrarlas con Java, porque no es necesario recuperar registros completos cuando únicamente se necesita conocer su cantidad. De esta manera, MultaService mantiene la decisión de negocio —si el estudiante puede generar otra multa— mientras que MultaRepository se encarga de obtener de forma directa el dato que esa decisión necesita. Ademas, evita cargar en memoria multas que no son necesarias para realizar la validación.### Punto de decisión 2 — Conteo de multas pendientes: ¿consulta o filtrado en memoria?
+
+### Punto de decisión 3 — Selección del adaptador activo
+Se eligió @ConditionalOnProperty para seleccionar el adaptador de pago activo durante el arranque de la aplicación. La propiedad app.pagos.proveedor determina si se crea PagosUdesAdapter o WompiAdapter, mientras que MultaService solo depende de PasarelaPagoPort y no necesita conocer cuál implementación está activa. Esto permite cambiar la pasarela modificando application.properties, sin modificar ni recompilar el Controller o el Service.
+
+La alternativa descartada fue inyectar un Map<String, PasarelaPagoPort> y seleccionar el proveedor en tiempo de ejecución. Aunque esta opción permitiría cambiar de proveedor sin reiniciar la aplicación y facilitaría escenarios donde varias pasarelas estuvieran disponibles simultáneamente, no era necesaria para el requisito planteado: cada sede mantiene una pasarela configurada durante el piloto. Además, esa alternativa haría que MultaService tenga que participar en la desición de que implementación concreta se utiliza, lo que haria que el Service conociera de forma indirecta conceptos de infraestructura y configuración.
+
+
+### Punto de decisión 4 — Diseño del puerto y el tipo de resultado
+Se definió PasarelaPagoPort como un contrato común que recibe una Multa y devuelve ResultadoPago. Este resultado utiliza conceptos neutrales como proveedor, exitoso, referenciaExterna y mensaje, en lugar de exponer los nombres o estructuras particulares de una pasarela. De esta forma, MultaService trabaja con el resultado de un pago sin conocer si fue procesado por PagosUDES o por Wompi.
+
+Esta decisión es especialmente importante porque las dos pasarelas tienen contratos diferentes: PagosUDES utiliza idTransaccion y estadoTransaccion, mientras que Wompi utiliza reference, status y maneja el monto en centavos. Si PasarelaPagoPort devolviera directamente el DTO de PagosUDES, MultaService quedaría acoplado a ese proveedor y Wompi tendría que adaptar su respuesta a una estructura que no le pertenece. De igual manera, utilizar directamente el DTO de Wompi produciría el mismo problema en sentido contrario. Agregar una tercera pasarela obligaría entonces a modificar el Service o a introducir más condiciones. ResultadoPago evita este acoplamiento al actuar como una representación común del resultado que necesitan las capas superiores.
+
+### Trade-off considerado — Parte 2
+[Párrafo honesto: qué opción se descartó entre capas extendidas
+(A/B) y puerto con adaptadores (C), qué se ganó y qué costó adicional
+tuvo la opción elegida —líneas de código, paquetes nuevos, curva de
+aprendizaje—, y si el equipo consideraría revertir la decisión si el
+piloto de pasarelas terminara y solo quedara una.]
 
 ### Documentacion
 
@@ -52,5 +70,9 @@ Para verificar el límite de multas pendientes se utiliza countByEstudianteIdAnd
 ![GET /api/multas/{id} con ID inexistente retorna 404 Not Found.](multas-biblioteca-api/DocumentacionTrabajo/get_noMultaId_404.png)
 ![PATCH /api/multas/{id}/pagar marca la multa como PAGADA con metodoPago "VENTANILLA";](multas-biblioteca-api/DocumentacionTrabajo/patch_pagarVentanilla_200.png)
 ![PATCH /api/multas/{id}/pagar se repite](multas-biblioteca-api/DocumentacionTrabajo/patch_pagarVentanilla_409.png)
+
+## Conclusiones
+En la primera parte se aprendió a separar las responsabilidades entre Controller, Service, Model y Repository, dejando las reglas de negocio propias de Multa en la entidad y las de casos de uso en MultaService. En la segunda parte se vio que las dos pasarelas tenían contratos HTTP diferentes, por lo que era conveniente mantener esos detalles separados de la lógica de casos de usos. Lo más difícil fue decidir entre extender las capas existentes o introducir un puerto, porque ambas opciones podían resolver el requisito, pero el puerto requería más clases y estructura. Finalmente, se eligió el puerto de dominio porque permite aislar los detalles de cada pasarela y facilita agregar o cambiar proveedores en el futuro.
+
 
 
